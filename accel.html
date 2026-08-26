@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>e-Turbo</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { color: #00e5ff; }
+        .dashboard {
+            width: 90%;
+            max-width: 1000px;
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        .control-panel {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .slider-container {
+            flex-grow: 1;
+            margin: 0 20px;
+        }
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+        }
+        .pedal-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #ff4757;
+            width: 80px;
+            text-align: right;
+        }
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Salle de Contrôle : Hybridation e-Turbo</h1>
+    
+    <div class="dashboard">
+        <div class="control-panel">
+            <label style="font-size: 1.2em;">Pédale d'accélérateur :</label>
+            <div class="slider-container">
+                <input type="range" id="throttle" min="0" max="100" value="0">
+            </div>
+            <div class="pedal-value"><span id="throttleValue">0</span> %</div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="rpmChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="fuelChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. PARAMÈTRES PHYSIQUES DU MODÈLE
+        // ==========================================
+
+        const TARGET_LIMIT = 60000; // Limite RPM avant ouverture wastegate
+        const INERTIA_STANDARD = 0.015; // Faible valeur = beaucoup de lag
+        const INERTIA_HYBRID = 0.15;  // Forte valeur = réponse immédiate (MGU-H)
+        
+        // Variables d'état
+        let currentThrottle = 0;
+        let rpmStandard = 0;
+        let rpmHybrid = 0;
+        
+        // ==========================================
+        // 2. CONFIGURATION DES GRAPHIQUES 
+        // ==========================================
+        const maxDataPoints = 100; 
+        const timeLabels = Array(maxDataPoints).fill(''); // Axe X vide
+
+        // Initialisation des tableaux de données
+        const dataRpmStandard = Array(maxDataPoints).fill(0);
+        const dataRpmHybrid = Array(maxDataPoints).fill(0);
+        const dataFuelStandard = Array(maxDataPoints).fill(0);
+        const dataFuelHybrid = Array(maxDataPoints).fill(0);
+
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false, 
+            scales: {
+                x: { display: false }, 
+                y: { grid: { color: '#333' } }
+            },
+            plugins: { legend: { labels: { color: 'white' } } }
+        };
+
+        // Graphique 1 : RPM
+        const ctxRpm = document.getElementById('rpmChart').getContext('2d');
+        const rpmChart = new Chart(ctxRpm, {
+            type: 'line',
+            data: {
+                labels: timeLabels,
+                datasets: [
+                    { label: 'Turbo Classique (Lag & Rebond)', borderColor: '#ff4757', data: dataRpmStandard, borderWidth: 2, pointRadius: 0 },
+                    { label: 'e-Turbo (Précision MGU-H)', borderColor: '#2ed573', data: dataRpmHybrid, borderWidth: 2, pointRadius: 0 },
+                    { label: 'Limite', borderColor: 'orange', data: Array(maxDataPoints).fill(TARGET_LIMIT), borderDash: [5, 5], borderWidth: 1, pointRadius: 0 }
+                ]
+            },
+            options: { ...commonOptions, scales: { y: { min: 0, max: 85000, grid: { color: '#333' } } } }
+        });
+
+        // Graphique 2 : Essence
+        const ctxFuel = document.getElementById('fuelChart').getContext('2d');
+        const fuelChart = new Chart(ctxFuel, {
+            type: 'line',
+            data: {
+                labels: timeLabels,
+                datasets: [
+                    { label: 'Essence Injectée (Classique)', borderColor: '#ff4757', data: dataFuelStandard, borderWidth: 2, pointRadius: 0 },
+                    { label: 'Essence Injectée (e-Turbo)', borderColor: '#2ed573', data: dataFuelHybrid, borderWidth: 2, pointRadius: 0 }
+                ]
+            },
+            options: { ...commonOptions, scales: { y: { min: 0, max: 15, grid: { color: '#333' } } } }
+        });
+
+        // ==========================================
+        // 3. LA BOUCLE PHYSIQUE 
+        // ==========================================
+        
+        // Mise à jour de la valeur affichée du slider
+        document.getElementById('throttle').addEventListener('input', function(e) {
+            currentThrottle = e.target.value / 100; // Valeur entre 0 et 1
+            document.getElementById('throttleValue').innerText = e.target.value;
+        });
+
+        //(20 FPS)
+        setInterval(() => {
+            let requestedRpm = currentThrottle * 85000; 
+
+            // 1. Modèle Turbo Classique
+            rpmStandard += (requestedRpm - rpmStandard) * INERTIA_STANDARD; // Inertie (Lag)
+            let isBouncing = false;
+            if (rpmStandard > TARGET_LIMIT) {
+                // Simulation du rebond mécanique brutal de la wastegate
+                rpmStandard = TARGET_LIMIT - 1500 - Math.random() * 1500; 
+                isBouncing = true;
+            }
+
+            // 2. Modèle e-Turbo
+            rpmHybrid += (requestedRpm - rpmHybrid) * INERTIA_HYBRID; 
+            if (rpmHybrid > TARGET_LIMIT) {
+                // Freinage numérique parfait par la génératrice MGU-H
+                rpmHybrid = TARGET_LIMIT; 
+            }
+
+            // 3. Consommation d'Essence 
+            let baseFuel = currentThrottle * 6.5; 
+            let fuelHybrid = baseFuel; // L'e-turbo suit parfaitement la base
+            
+            let fuelStandard = baseFuel;
+            // Pénalité 1 : Le Lag
+            if (requestedRpm > rpmStandard) {
+                fuelStandard += (requestedRpm - rpmStandard) * 0.00015;
+            }
+            // Pénalité 2 : Instabilité de la wastegate
+            if (isBouncing) {
+                fuelStandard += 1.5 + Math.random() * 0.8; 
+            }
+
+            //  MISE À JOUR DES GRAPHIQUES 
+            dataRpmStandard.shift(); dataRpmStandard.push(rpmStandard);
+            dataRpmHybrid.shift(); dataRpmHybrid.push(rpmHybrid);
+            
+            dataFuelStandard.shift(); dataFuelStandard.push(fuelStandard);
+            dataFuelHybrid.shift(); dataFuelHybrid.push(fuelHybrid);
+
+            rpmChart.update();
+            fuelChart.update();
+
+        }, 50); // 50ms d'intervalle
+    </script>
+</body>
+</html>
