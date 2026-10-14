@@ -6,7 +6,6 @@ Research project (CPGE, 2025–2026) on an electric-assist turbocharger for smal
 | File | What it is |
 |---|---|
 | `accel.py` | Python simulation of [what it computes] |
-| `batteryconsump.py` | [status: used in results / experimental / not used] |
 | `accel.html` | Interactive dashboard (HTML/CSS/JS) with live sliders and an accelerator wheel |
 | `LowerS.stl`, `RotorS.stl`, `UpperS.stl` | 3D-printable parts for the DC-motor test rig |
 | `PrintInstructions.rtf` | Print settings |
